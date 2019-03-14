@@ -27,7 +27,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 
 public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements TarantoolClient {
+
     public static final CommunicationException NOT_INIT_EXCEPTION = new CommunicationException("Not connected, initializing connection");
+
     protected TarantoolClientConfig config;
 
     /**
@@ -82,18 +84,18 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
         super();
         this.thumbstone = NOT_INIT_EXCEPTION;
         this.config = config;
-        this.initialRequestSize = config.defaultRequestSize;
+        this.initialRequestSize = config.getDefaultRequestSize();
         this.socketProvider = socketProvider;
         this.stats = new TarantoolClientStats();
-        this.futures = new ConcurrentHashMap<>(config.predictedFutures);
-        this.sharedBuffer = ByteBuffer.allocateDirect(config.sharedBufferSize);
+        this.futures = new ConcurrentHashMap<>(config.getPredictedFutures());
+        this.sharedBuffer = ByteBuffer.allocateDirect(config.getSharedBufferSize());
         this.writerBuffer = ByteBuffer.allocateDirect(sharedBuffer.capacity());
         this.connector.setDaemon(true);
         this.connector.setName("Tarantool connector");
         this.syncOps = new SyncOps();
         this.composableAsyncOps = new ComposableAsyncOps();
         this.fireAndForgetOps = new FireAndForgetOps();
-        if (config.useNewCall) {
+        if (config.isUseNewCall()) {
             setCallCode(Code.CALL);
             this.syncOps.setCallCode(Code.CALL);
             this.fireAndForgetOps.setCallCode(Code.CALL);
@@ -101,8 +103,8 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
         }
         connector.start();
         try {
-            if (!waitAlive(config.initTimeoutMillis, TimeUnit.MILLISECONDS)) {
-                CommunicationException e = new CommunicationException(config.initTimeoutMillis +
+            if (!waitAlive(config.getInitTimeoutMillis(), TimeUnit.MILLISECONDS)) {
+                CommunicationException e = new CommunicationException(config.getInitTimeoutMillis() +
                         "ms is exceeded when waiting for client initialization. " +
                         "You could configure init timeout in TarantoolConfig");
 
@@ -139,7 +141,7 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
     protected void connect(final SocketChannel channel) throws Exception {
         try {
             TarantoolInstanceConnectionMeta connectMeta = BinaryProtoUtils
-                    .connect(channel, config.username, config.password);
+                    .connect(channel, config.getUsername(), config.getPassword());
 
             this.salt = connectMeta.getSalt();
             this.serverVersion = connectMeta.getServerVersion();
@@ -207,8 +209,8 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
     protected void configureThreads(String threadName) {
         reader.setName("Tarantool " + threadName + " reader");
         writer.setName("Tarantool " + threadName + " writer");
-        writer.setPriority(config.writerThreadPriority);
-        reader.setPriority(config.readerThreadPriority);
+        writer.setPriority(config.getWriterThreadPriority());
+        reader.setPriority(config.getReaderThreadPriority());
     }
 
     protected Future<?> exec(Code code, Object... args) {
@@ -282,7 +284,9 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
 
     protected void sharedWrite(ByteBuffer buffer) throws InterruptedException, TimeoutException {
         long start = System.currentTimeMillis();
-        if (bufferLock.tryLock(config.writeTimeoutMillis, TimeUnit.MILLISECONDS)) {
+        long writeTimeoutMillis = config.getWriteTimeoutMillis();
+
+        if (bufferLock.tryLock(writeTimeoutMillis, TimeUnit.MILLISECONDS)) {
             try {
                 int rem = buffer.remaining();
                 stats.sharedMaxPacketSize = Math.max(stats.sharedMaxPacketSize, rem);
@@ -291,11 +295,11 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
                 }
                 while (sharedBuffer.remaining() < buffer.limit()) {
                     stats.sharedEmptyAwait++;
-                    long remaining = config.writeTimeoutMillis - (System.currentTimeMillis() - start);
+                    long remaining = writeTimeoutMillis - (System.currentTimeMillis() - start);
                     try {
                         if (remaining < 1 || !bufferEmpty.await(remaining, TimeUnit.MILLISECONDS)) {
                             stats.sharedEmptyAwaitTimeouts++;
-                            throw new TimeoutException(config.writeTimeoutMillis + "ms is exceeded while waiting for empty buffer you could configure write timeout it in TarantoolConfig");
+                            throw new TimeoutException(writeTimeoutMillis + "ms is exceeded while waiting for empty buffer you could configure write timeout it in TarantoolConfig");
                         }
                     } catch (InterruptedException e) {
                         throw new CommunicationException("Interrupted", e);
@@ -310,13 +314,13 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
             }
         } else {
             stats.sharedWriteLockTimeouts++;
-            throw new TimeoutException(config.writeTimeoutMillis + "ms is exceeded while waiting for shared buffer lock you could configure write timeout in TarantoolConfig");
+            throw new TimeoutException(writeTimeoutMillis + "ms is exceeded while waiting for shared buffer lock you could configure write timeout in TarantoolConfig");
         }
     }
 
     private boolean directWrite(ByteBuffer buffer) throws InterruptedException, IOException, TimeoutException {
-        if (sharedBuffer.capacity() * config.directWriteFactor <= buffer.limit()) {
-            if (writeLock.tryLock(config.writeTimeoutMillis, TimeUnit.MILLISECONDS)) {
+        if (sharedBuffer.capacity() * config.getDirectWriteFactor() <= buffer.limit()) {
+            if (writeLock.tryLock(config.getWriteTimeoutMillis(), TimeUnit.MILLISECONDS)) {
                 try {
                     int rem = buffer.remaining();
                     stats.directMaxPacketSize = Math.max(stats.directMaxPacketSize, rem);
@@ -332,7 +336,7 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
                 return true;
             } else {
                 stats.directWriteLockTimeouts++;
-                throw new TimeoutException(config.writeTimeoutMillis + "ms is exceeded while waiting for channel lock you could configure write timeout in TarantoolConfig");
+                throw new TimeoutException(config.getWriteTimeoutMillis() + "ms is exceeded while waiting for channel lock you could configure write timeout in TarantoolConfig");
             }
         }
         return false;
@@ -621,11 +625,11 @@ public class TarantoolClientImpl extends TarantoolBase<Future<?>> implements Tar
      * Manages state changes.
      */
     protected final class StateHelper {
-        static final int READING = 1;
-        static final int WRITING = 2;
-        static final int ALIVE = READING | WRITING;
-        static final int RECONNECT = 4;
-        static final int CLOSED = 8;
+        static public final int READING = 1;
+        static public final int WRITING = 2;
+        static public final int ALIVE = READING | WRITING;
+        static public final int RECONNECT = 4;
+        static public final int CLOSED = 8;
 
         private final AtomicInteger state;
 

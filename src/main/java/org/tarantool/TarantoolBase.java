@@ -83,4 +83,5 @@ public abstract class TarantoolBase<Result> extends AbstractTarantoolOps<Integer
     public String getServerVersion() {
         return serverVersion;
     }
+
 }
