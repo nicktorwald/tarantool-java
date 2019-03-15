@@ -1,7 +1,10 @@
 package org.tarantool;
 
+import org.tarantool.cluster.RefreshClusterInstancesAware;
+
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -14,12 +17,12 @@ import java.util.concurrent.Executors;
  * Failed operations will be retried once connection is re-established
  * unless the configured expiration time is over.
  */
-public class TarantoolClusterClient extends TarantoolClientImpl {
+public class TarantoolClusterClient extends TarantoolClientImpl implements RefreshClusterInstancesAware {
     /* Need some execution context to retry writes. */
     private Executor executor;
 
     /* Collection of operations to be retried. */
-    private ConcurrentHashMap<Long, ExpirableOp<?>> retries = new ConcurrentHashMap<Long, ExpirableOp<?>>();
+    private ConcurrentHashMap<Long, ExpirableOp<?>> retries = new ConcurrentHashMap<>();
 
     /**
      * @param config Configuration.
@@ -57,7 +60,7 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
     protected CompletableFuture<?> doExec(Code code, Object[] args) {
         validateArgs(args);
         long sid = syncId.incrementAndGet();
-        CompletableFuture<?> q = makeFuture(sid, code, args);
+        ExpirableOp<?> q = makeFuture(sid, code, args);
 
         if (isDead(q)) {
             return q;
@@ -117,7 +120,7 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
         return false;
     }
 
-    protected CompletableFuture<?> makeFuture(long id, Code code, Object... args) {
+    protected ExpirableOp<?> makeFuture(long id, Code code, Object... args) {
         int expireTime = ((TarantoolClusterClientConfig) config).getOperationExpiryTimeMillis();
         return new ExpirableOp(id, expireTime, code, args);
     }
@@ -131,7 +134,7 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
             // First call is before the constructor finished. Skip it.
             return;
         }
-        Collection<ExpirableOp<?>> futuresToRetry = new ArrayList<ExpirableOp<?>>(retries.values());
+        Collection<ExpirableOp<?>> futuresToRetry = new ArrayList<>(retries.values());
         retries.clear();
         long now = System.currentTimeMillis();
         for (final ExpirableOp<?> future : futuresToRetry) {
@@ -151,10 +154,23 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
         }
     }
 
+    @Override
+    public void onInstancesRefreshed(Set<String> instances) {
+        if (socketProvider instanceof RoundRobinSocketProviderImpl) {
+            RoundRobinSocketProviderImpl sock = ((RoundRobinSocketProviderImpl) socketProvider);
+            String addressInUse = sock.getLastObtainedAddress();
+            if (!instances.contains(addressInUse)) {
+
+            }
+            sock.setAddresses(instances);
+        }
+    }
+
     /**
      * Holds operation code and arguments for retry.
      */
-    private class ExpirableOp<V> extends CompletableFuture<V> {
+    private class ExpirableOp<V> extends TarantoolOp<V> {
+
         /**
          * Moment in time when operation is not considered for retry.
          */
@@ -164,11 +180,6 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
          * A task identifier used in {@link TarantoolClientImpl#futures}.
          */
         final private long id;
-
-        /**
-         * Tarantool binary protocol operation code.
-         */
-        final private Code code;
 
         /**
          * Arguments of operation.
@@ -182,9 +193,9 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
          * @param args       Operation arguments.
          */
         ExpirableOp(long id, int expireTime, Code code, Object... args) {
+            super(code);
             this.id = id;
             this.deadline = System.currentTimeMillis() + expireTime;
-            this.code = code;
             this.args = args;
         }
 
@@ -194,10 +205,6 @@ public class TarantoolClusterClient extends TarantoolClientImpl {
 
         public long getId() {
             return id;
-        }
-
-        public Code getCode() {
-            return code;
         }
 
         public Object[] getArgs() {
