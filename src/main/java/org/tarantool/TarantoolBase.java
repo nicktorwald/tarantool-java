@@ -10,11 +10,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 public abstract class TarantoolBase<Result> extends AbstractTarantoolOps<Integer, List<?>, Object, Result> {
-    protected String serverVersion;
-    /**
-     * Connection state
-     */
-    protected String salt;
+
+    protected TarantoolInstanceConnectionMeta instanceConnectionMeta;
     protected MsgPackLite msgPackLite = MsgPackLite.INSTANCE;
     protected AtomicLong syncId = new AtomicLong();
     protected int initialRequestSize = 4096;
@@ -26,8 +23,7 @@ public abstract class TarantoolBase<Result> extends AbstractTarantoolOps<Integer
         super();
         try {
             TarantoolInstanceConnectionMeta connectMeta = BinaryProtoUtils.connect(socket, username, password);
-            this.serverVersion = connectMeta.getServerVersion();
-            this.salt = connectMeta.getSalt();
+            this.instanceConnectionMeta = connectMeta;
         } catch (IOException e) {
             throw new CommunicationException("Couldn't connect to tarantool", e);
         }
@@ -81,7 +77,7 @@ public abstract class TarantoolBase<Result> extends AbstractTarantoolOps<Integer
     }
 
     public String getServerVersion() {
-        return serverVersion;
+        return instanceConnectionMeta.getServerVersion();
     }
 
 }

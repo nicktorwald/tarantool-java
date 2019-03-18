@@ -82,8 +82,9 @@ public abstract class BaseSocketChannelProvider implements SocketChannelProvider
      */
     private boolean areRetriesExhausted(int retries) {
         int limit = getRetriesLimit();
-        if (limit < 0)
+        if (limit < 0) {
             return false;
+        }
         return retries >= limit;
     }
 }

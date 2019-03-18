@@ -24,8 +24,8 @@ public class ClusterServiceStoredFunctionDiscoverer implements ClusterServiceDis
     private TarantoolClientConfig config;
 
     public ClusterServiceStoredFunctionDiscoverer(TarantoolClusterClientConfig clientConfig) {
-        this.infoInstance = clientConfig.getInfoInstance();
-        this.infoFunctionName = clientConfig.getInfoStoredFunction();
+        this.infoInstance = clientConfig.infoInstance;
+        this.infoFunctionName = clientConfig.infoStoredFunction;
         this.config = clientConfig;
     }
 

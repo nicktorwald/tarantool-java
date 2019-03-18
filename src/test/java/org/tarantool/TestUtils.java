@@ -1,10 +1,20 @@
 package org.tarantool;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class TestUtils {
+
+    public static String makeDiscoveryFunction(String functionName, Collection<String> addresses) {
+        String functionResult = addresses.stream()
+                .map(address -> "'" + address + "'")
+                .collect(Collectors.joining(","));
+        return "function " + functionName + "() return {" + functionResult + "} end";
+    }
+
     final static String replicationInfoRequest = "return " +
                                                  "box.info.id, " +
                                                  "box.info.lsn, " +

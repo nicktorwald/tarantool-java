@@ -135,23 +135,22 @@ public abstract class AbstractTarantoolConnectorIT {
     }
 
     protected static TarantoolClientConfig makeClientConfig() {
-        return TarantoolClientConfig.builder()
-                .setUsername(username)
-                .setPassword(password)
-                .setInitTimeoutMillis(RESTART_TIMEOUT)
-                .setSharedBufferSize(128)
-                .build();
+        return fillClientConfig(new TarantoolClientConfig());
     }
 
-    protected static TarantoolClusterClientConfig makeClusterClientConfig() {
-        return TarantoolClusterClientConfig.builder()
-                .setUsername(username)
-                .setPassword(password)
-                .setInitTimeoutMillis(RESTART_TIMEOUT)
-                .setSharedBufferSize(128)
-                .setExecutor(null)
-                .setOperationExpiryTimeMillis(TIMEOUT)
-                .build();
+    public static TarantoolClusterClientConfig makeClusterClientConfig() {
+        TarantoolClusterClientConfig config = fillClientConfig(new TarantoolClusterClientConfig());
+        config.executor = null;
+        config.operationExpiryTimeMillis = TIMEOUT;
+        return config;
+    }
+
+    private static <T extends TarantoolClientConfig> T fillClientConfig(T config) {
+        config.username = username;
+        config.password = password;
+        config.initTimeoutMillis = RESTART_TIMEOUT;
+        config.sharedBufferSize = 128;
+        return (T) config;
     }
 
     protected static TarantoolConsole openConsole() {
@@ -159,7 +158,7 @@ public abstract class AbstractTarantoolConnectorIT {
     }
 
     protected static TarantoolConsole openConsole(String instance) {
-        return TarantoolConsole.open(control.tntCtlWorkDir, instance);
+        return TarantoolConsole.open(TarantoolControl.tntCtlWorkDir, instance);
     }
 
     protected TarantoolConnection openConnection() {

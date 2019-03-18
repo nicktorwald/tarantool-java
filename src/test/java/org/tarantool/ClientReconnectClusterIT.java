@@ -12,6 +12,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.tarantool.AbstractTarantoolConnectorIT.makeClusterClientConfig;
+import static org.tarantool.TestUtils.makeDiscoveryFunction;
 import static org.tarantool.TestUtils.makeInstanceEnv;
 
 public class ClientReconnectClusterIT {
@@ -110,8 +111,71 @@ public class ClientReconnectClusterIT {
         assertEquals("Connection time out.", e.getMessage());
     }
 
-    private TarantoolClientImpl makeClient(String...addrs) {
+    @Test
+    void testUpdateNodeList() {
+        control.start(SRV1);
+        control.start(SRV2);
+        control.start(SRV3);
+
+        control.waitStarted(SRV1);
+        control.waitStarted(SRV2);
+        control.waitStarted(SRV3);
+
+        String service1Address = "localhost:" + PORTS[0];
+        String service2Address = "127.0.0.1:" + PORTS[1];
+        String service3Address = "localhost:" + PORTS[2];
+
+        String infoFunctionName = "getAddresses";
+        String infoFunctionScript = makeDiscoveryFunction(infoFunctionName, Arrays.asList(service2Address, service3Address));
+
+        control.openConsole(SRV1).exec(infoFunctionScript);
+
+        final TarantoolClusterClient client = makeClient(
+                service1Address,
+                infoFunctionName,
+                service1Address
+        );
+
+        List<?> ids = client.syncOps().eval(
+                "return box.schema.space.create('rr_test2').id, " +
+                        "box.space.rr_test2:create_index('primary').id");
+
+        final int spaceId = ((Number)ids.get(0)).intValue();
+        final int pkId = ((Number)ids.get(1)).intValue();
+
+        final List<?> key = Collections.singletonList(1);
+        final List<?> tuple = Arrays.asList(1, 1);
+
+        client.syncOps().insert(spaceId, tuple);
+        control.waitReplication(SRV1, TIMEOUT);
+
+        List<?> res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
+        assertEquals(res.get(0), tuple);
+
+        control.stop(SRV1);
+
+        res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
+        assertEquals(res.get(0), Arrays.asList(1, 1));
+
+        control.stop(SRV2);
+
+        res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
+        assertEquals(res.get(0), Arrays.asList(1, 1));
+
+        control.stop(SRV3);
+
+        CommunicationException e = assertThrows(CommunicationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
+            }
+        });
+    }
+
+    private TarantoolClusterClient makeClient(String infoInstance, String infoFunction, String... addresses) {
         TarantoolClusterClientConfig config = makeClusterClientConfig();
-        return new TarantoolClusterClient(config, addrs);
+        config.infoInstance = infoInstance;
+        config.infoStoredFunction = infoFunction;
+        return new TarantoolClusterClient(config, addresses);
     }
 }

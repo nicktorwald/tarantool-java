@@ -1,14 +1,22 @@
 package org.tarantool;
 
-import org.tarantool.cluster.RefreshClusterInstancesAware;
+import org.tarantool.cluster.ClusterServiceDiscoverer;
+import org.tarantool.cluster.ClusterServiceStoredFunctionDiscoverer;
+import org.tarantool.server.TarantoolBinaryPacket;
 
+import java.io.IOException;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.StampedLock;
 
 /**
  * Basic implementation of a client that may work with the cluster
@@ -17,19 +25,31 @@ import java.util.concurrent.Executors;
  * Failed operations will be retried once connection is re-established
  * unless the configured expiration time is over.
  */
-public class TarantoolClusterClient extends TarantoolClientImpl implements RefreshClusterInstancesAware {
-    /* Need some execution context to retry writes. */
+public class TarantoolClusterClient extends TarantoolClientImpl {
+
+    /**
+     * Need some execution context to retry writes.
+     */
     private Executor executor;
 
-    /* Collection of operations to be retried. */
+    /**
+     * Discovery activity
+     */
+    private ScheduledExecutorService instancesDiscoveryExecutor;
+    private Runnable instancesDiscovererTask;
+    private StampedLock discoveryLock = new StampedLock();
+
+    /**
+     * Collection of operations to be retried.
+     */
     private ConcurrentHashMap<Long, ExpirableOp<?>> retries = new ConcurrentHashMap<>();
 
     /**
-     * @param config Configuration.
-     * @param addrs  Array of addresses in the form of [host]:[port].
+     * @param config    Configuration.
+     * @param addresses Array of addresses in the form of [host]:[port].
      */
-    public TarantoolClusterClient(TarantoolClusterClientConfig config, String... addrs) {
-        this(config, new RoundRobinSocketProviderImpl(addrs).setTimeout(config.getOperationExpiryTimeMillis()));
+    public TarantoolClusterClient(TarantoolClusterClientConfig config, String... addresses) {
+        this(config, new RoundRobinSocketProviderImpl(addresses).setTimeout(config.operationExpiryTimeMillis));
     }
 
     /**
@@ -39,8 +59,24 @@ public class TarantoolClusterClient extends TarantoolClientImpl implements Refre
     public TarantoolClusterClient(TarantoolClusterClientConfig config, SocketChannelProvider provider) {
         super(provider, config);
 
-        this.executor = config.getExecutor() == null ?
-                Executors.newSingleThreadExecutor() : config.getExecutor();
+        this.executor = config.executor == null ?
+                Executors.newSingleThreadExecutor() : config.executor;
+
+        if (StringUtils.isNotBlank(config.infoInstance)
+                && StringUtils.isNotBlank(config.infoStoredFunction)) {
+            this.instancesDiscovererTask =
+                    createDiscoveryTask(new ClusterServiceStoredFunctionDiscoverer(config));
+            this.instancesDiscoveryExecutor
+                    = Executors.newSingleThreadScheduledExecutor(new TarantoolThreadDaemonFactory("tarantoolDiscoverer"));
+
+            // todo: it's better to start a job later (out of ctor)
+            this.instancesDiscoveryExecutor.scheduleWithFixedDelay(
+                    this.instancesDiscovererTask,
+                    0,
+                    config.infoScanTimeMillis,
+                    TimeUnit.MILLISECONDS
+            );
+        }
     }
 
     @Override
@@ -60,23 +96,30 @@ public class TarantoolClusterClient extends TarantoolClientImpl implements Refre
     protected CompletableFuture<?> doExec(Code code, Object[] args) {
         validateArgs(args);
         long sid = syncId.incrementAndGet();
-        ExpirableOp<?> q = makeFuture(sid, code, args);
+        ExpirableOp<?> future = makeFuture(sid, code, args);
 
-        if (isDead(q)) {
-            return q;
-        }
-        futures.put(sid, q);
-        if (isDead(q)) {
-            futures.remove(sid);
-            return q;
-        }
+        long stamp = discoveryLock.readLock();
         try {
-            write(code, sid, null, args);
-        } catch (Exception e) {
-            futures.remove(sid);
-            fail(q, e);
+            if (isDead(future)) {
+                return future;
+            }
+            futures.put(sid, future);
+            if (isDead(future)) {
+                futures.remove(sid);
+                return future;
+            }
+
+            try {
+                write(code, sid, null, args);
+            } catch (Exception e) {
+                futures.remove(sid);
+                fail(future, e);
+            }
+
+            return future;
+        } finally {
+            discoveryLock.unlock(stamp);
         }
-        return q;
     }
 
     @Override
@@ -100,6 +143,10 @@ public class TarantoolClusterClient extends TarantoolClientImpl implements Refre
     protected void close(Exception e) {
         super.close(e);
 
+        if (instancesDiscoveryExecutor != null) {
+            instancesDiscoveryExecutor.shutdownNow();
+        }
+
         if (retries == null) {
             // May happen within constructor.
             return;
@@ -121,7 +168,7 @@ public class TarantoolClusterClient extends TarantoolClientImpl implements Refre
     }
 
     protected ExpirableOp<?> makeFuture(long id, Code code, Object... args) {
-        int expireTime = ((TarantoolClusterClientConfig) config).getOperationExpiryTimeMillis();
+        int expireTime = ((TarantoolClusterClientConfig) config).operationExpiryTimeMillis;
         return new ExpirableOp(id, expireTime, code, args);
     }
 
@@ -155,15 +202,79 @@ public class TarantoolClusterClient extends TarantoolClientImpl implements Refre
     }
 
     @Override
-    public void onInstancesRefreshed(Set<String> instances) {
-        if (socketProvider instanceof RoundRobinSocketProviderImpl) {
-            RoundRobinSocketProviderImpl sock = ((RoundRobinSocketProviderImpl) socketProvider);
-            String addressInUse = sock.getLastObtainedAddress();
-            if (!instances.contains(addressInUse)) {
-
-            }
-            sock.setAddresses(instances);
+    protected void complete(TarantoolBinaryPacket packet, TarantoolOp<?> future) {
+        super.complete(packet, future);
+        RefreshableSocketProvider provider = getRefreshableSocketProvider();
+        if (provider != null) {
+            renewConnectionIfRequired(provider.getAddresses());
         }
+    }
+
+    private void onInstancesRefreshed(Set<String> instances) {
+        RefreshableSocketProvider provider = getRefreshableSocketProvider();
+        if (provider != null) {
+            provider.refreshAddresses(instances);
+            renewConnectionIfRequired(provider.getAddresses());
+        }
+    }
+
+    private RefreshableSocketProvider getRefreshableSocketProvider() {
+        return socketProvider instanceof RefreshableSocketProvider
+                ? (RefreshableSocketProvider) socketProvider
+                : null;
+    }
+
+    private void renewConnectionIfRequired(Collection<SocketAddress> addresses) {
+        if (pendingResponsesCount.get() > 0 || !isAlive()) {
+            return;
+        }
+        SocketAddress addressInUse = getCurrentAddressOrNull();
+        if (!(addressInUse == null || addresses.contains(addressInUse))) {
+            long stamp = discoveryLock.tryWriteLock();
+            if (!discoveryLock.validate(stamp)) {
+                return;
+            }
+            try {
+                if (pendingResponsesCount.get() == 0) {
+                    stopIO();
+                }
+            } finally {
+                discoveryLock.unlock(stamp);
+            }
+        }
+    }
+
+    private SocketAddress getCurrentAddressOrNull() {
+        try {
+            return channel.getRemoteAddress();
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    public void refreshInstances() {
+        if (instancesDiscovererTask != null) {
+            instancesDiscovererTask.run();
+        }
+    }
+
+    private Runnable createDiscoveryTask(ClusterServiceDiscoverer serviceDiscoverer) {
+        return new Runnable() {
+
+            private Set<String> lastInstances;
+
+            @Override
+            public synchronized void run() {
+                try {
+                    Set<String> freshInstances = serviceDiscoverer.getInstances();
+                    if (!(freshInstances.isEmpty() || Objects.equals(lastInstances, freshInstances))) {
+                        lastInstances = freshInstances;
+                        onInstancesRefreshed(lastInstances);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        };
     }
 
     /**
