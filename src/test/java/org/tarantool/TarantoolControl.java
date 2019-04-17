@@ -186,6 +186,7 @@ public class TarantoolControl {
                 openConsole(instanceName).close();
                 break;
             } catch (Exception ignored) {
+                System.out.println("console: " + ignored);
                 /* No-op. */
             }
             sleep();
