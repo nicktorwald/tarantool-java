@@ -54,8 +54,7 @@ public abstract class AbstractJdbcIT {
     public static void setupEnv() throws Exception {
         control = new TarantoolControl();
         control.createInstance("jdk-testing", LUA_FILE, makeInstanceEnv(LISTEN, ADMIN));
-        control.start("jdk-testing");
-        control.waitStarted("jdk-testing");
+        control.startAndAwait("jdk-testing");
 
         sqlExec(cleanSql);
         sqlExec(initSql);
@@ -66,8 +65,7 @@ public abstract class AbstractJdbcIT {
         try {
             sqlExec(cleanSql);
         } finally {
-            control.stop("jdk-testing");
-            control.waitStopped("jdk-testing");
+            control.stopAndAwait("jdk-testing");
         }
     }
 

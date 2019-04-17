@@ -29,7 +29,8 @@ public class ClientReconnectClusterIT {
         AbstractTarantoolConnectorIT.password,
         "localhost:" + PORTS[0],
         "localhost:" + PORTS[1],
-        "localhost:" + PORTS[2]);
+        "localhost:" + PORTS[2]
+    );
 
     // Resume replication faster in case of temporary failure to fit TIMEOUT.
     private static double REPLICATION_TIMEOUT = 0.1;
@@ -49,7 +50,7 @@ public class ClientReconnectClusterIT {
     @AfterAll
     public static void tearDownEnv() {
         for (String name : Arrays.asList(SRV1, SRV2, SRV3)) {
-            control.stop(name);
+            control.stopAndAwait(name);
             /*
              * Don't cleanup instance directory to allow further investigation
              * of xlog / snap files in case of the test failure.
@@ -59,6 +60,7 @@ public class ClientReconnectClusterIT {
 
     @Test
     public void testRoundRobinReconnect() {
+        // start instances simultaneously to sync up them
         control.start(SRV1);
         control.start(SRV2);
         control.start(SRV3);
@@ -89,17 +91,17 @@ public class ClientReconnectClusterIT {
         List<?> res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
         assertEquals(res.get(0), tuple);
 
-        control.stop(SRV1);
+        control.stopAndAwait(SRV1);
 
         res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
         assertEquals(res.get(0), Arrays.asList(1, 1));
 
-        control.stop(SRV2);
+        control.stopAndAwait(SRV2);
 
         res = client.syncOps().select(spaceId, pkId, key, 0, 1, Iterator.EQ);
         assertEquals(res.get(0), Arrays.asList(1, 1));
 
-        control.stop(SRV3);
+        control.stopAndAwait(SRV3);
 
         CommunicationException e = assertThrows(CommunicationException.class, new Executable() {
             @Override

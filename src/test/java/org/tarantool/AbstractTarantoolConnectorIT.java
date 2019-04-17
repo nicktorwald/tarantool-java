@@ -234,13 +234,11 @@ public abstract class AbstractTarantoolConnectorIT {
     }
 
     protected static void stopTarantool(String instance) {
-        control.stop(instance);
-        control.waitStopped("jdk-testing");
+        control.stopAndAwait(instance);
     }
 
     protected static void startTarantool(String instance) {
-        control.start(instance);
-        control.waitStarted("jdk-testing");
+        control.startAndAwait(instance);
     }
 
     /**
