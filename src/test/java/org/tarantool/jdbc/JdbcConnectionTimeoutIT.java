@@ -71,7 +71,9 @@ public class JdbcConnectionTimeoutIT {
 
     @AfterEach
     void tearDown() throws SQLException {
-        connection.close();
+        if (connection != null) {
+            connection.close();
+        }
     }
 
     @Test
